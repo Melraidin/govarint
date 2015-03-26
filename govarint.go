@@ -37,6 +37,31 @@ func countLeadingZeros(x uint32) int {
 	return count
 }
 
+// TODO This should detect if there's additional bytes in the data
+// after consuming all the fields specified and error out.
+// func Decode(fields []uint8, data []byte) ([]uint32, error) {
+// 	var dataBitIndex uint8
+// 	var dataByteIndex int
+
+// 	valueLengths := []uint8{}
+
+// 	for _, fieldWidth := range fields {
+// 		mask := uint16((1 << fieldWidth) - 1)
+// 		mask <<= 8 - fieldWidth - dataBitIndex
+// 		firstMask := uint8(mask) >> 8
+// 		firstPart := firstMask & data[dataByteIndex]
+// 		fmt.Printf("firstPart: %d\n", firstPart)
+
+// 		secondPart := uint8(0)
+// 		if fieldWidth > 8 {
+// 			secondMask := uint8(mask)
+// 			secondPart = secondMask & data[]
+// 		}
+// 	}
+
+// 	return []uint32{}, nil
+// }
+
 /**
 Encode the given values in the given varint format.
 
@@ -73,7 +98,7 @@ func Encode(fields []uint8, values []uint32) ([]byte, error) {
 			continue
 		}
 
-		if valueWidth > int(fieldWidth) {
+		if uint64(values[i]) > uint64((1<<(1<<fieldWidth))-1) {
 			return []byte{}, fmt.Errorf("value %d too large for field width %d", values[i], fieldWidth)
 		}
 
@@ -108,6 +133,43 @@ func Encode(fields []uint8, values []uint32) ([]byte, error) {
 	}
 
 	return formatResult, nil
+}
+
+func popBitsFromSlice(slice *[]byte, width uint8, curByte *uint8, curIndex *uint8, addFirstBit bool) (uint32, error) {
+	// We only need to read from the current byte.
+	if width+*curIndex <= 8 {
+		mask := uint8((1 << width) - 1)
+		mask <<= 8 - width - *curIndex
+
+		fmt.Printf("mask: 0x%x, curByte&mask: 0x%x\n", mask, *curByte&mask)
+
+		value := uint32((*curByte & mask) >> (8 - width - *curIndex))
+		*curIndex += width
+
+		if *curIndex < 8 {
+			return value, nil
+		}
+
+		*curIndex = 0
+		if len(*slice) != 0 {
+			*curByte, *slice = (*slice)[0], (*slice)[1:len(*slice)]
+		}
+
+		return value, nil
+
+		// firstMask := uint8(mask) >> 8
+		// firstPart := firstMask & data[dataByteIndex]
+		// fmt.Printf("firstPart: %d\n", firstPart)
+
+		// secondPart := uint8(0)
+		// if fieldWidth > 8 {
+		// 	secondMask := uint8(mask)
+		// 	secondPart = secondMask & data[]
+		// }
+
+	}
+
+	return 0, fmt.Errorf("not yet implemented")
 }
 
 func addBitsToSlice(slice *[]byte, value uint32, width uint8, curByte *uint8, curIndex *uint8, skipFirstBit bool) {

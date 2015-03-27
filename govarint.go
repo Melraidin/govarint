@@ -37,31 +37,6 @@ func countLeadingZeros(x uint32) int {
 	return count
 }
 
-// TODO This should detect if there's additional bytes in the data
-// after consuming all the fields specified and error out.
-// func Decode(fields []uint8, data []byte) ([]uint32, error) {
-// 	var dataBitIndex uint8
-// 	var dataByteIndex int
-
-// 	valueLengths := []uint8{}
-
-// 	for _, fieldWidth := range fields {
-// 		mask := uint16((1 << fieldWidth) - 1)
-// 		mask <<= 8 - fieldWidth - dataBitIndex
-// 		firstMask := uint8(mask) >> 8
-// 		firstPart := firstMask & data[dataByteIndex]
-// 		fmt.Printf("firstPart: %d\n", firstPart)
-
-// 		secondPart := uint8(0)
-// 		if fieldWidth > 8 {
-// 			secondMask := uint8(mask)
-// 			secondPart = secondMask & data[]
-// 		}
-// 	}
-
-// 	return []uint32{}, nil
-// }
-
 /**
 Encode the given values in the given varint format.
 
@@ -135,16 +110,48 @@ func Encode(fields []uint8, values []uint32) ([]byte, error) {
 	return formatResult, nil
 }
 
+func Decode(fields []uint8, data []byte) ([]uint32, error) {
+	var curIndex uint8
+	curByte := data[0]
+	data = data[1:len(data)]
+
+	fieldWidths := []uint8{}
+
+	for _, formatWidth := range fields {
+		curFieldWidth, err := popBitsFromSlice(&data, formatWidth, &curByte, &curIndex, false)
+		if err != nil {
+			return []uint32{}, err
+		}
+		fieldWidths = append(fieldWidths, uint8(curFieldWidth))
+	}
+
+	values := []uint32{}
+
+	for _, width := range fieldWidths {
+		curValue, err := popBitsFromSlice(&data, width, &curByte, &curIndex, true)
+		if err != nil {
+			return []uint32{}, err
+		}
+		values = append(values, curValue)
+	}
+
+	return values, nil
+}
+
 func popBitsFromSlice(slice *[]byte, width uint8, curByte *uint8, curIndex *uint8, addFirstBit bool) (uint32, error) {
 	// We only need to read from the current byte.
 	if width+*curIndex <= 8 {
 		mask := uint8((1 << width) - 1)
 		mask <<= 8 - width - *curIndex
 
-		fmt.Printf("mask: 0x%x, curByte&mask: 0x%x\n", mask, *curByte&mask)
-
 		value := uint32((*curByte & mask) >> (8 - width - *curIndex))
-		*curIndex += width
+
+		if addFirstBit {
+			*curIndex += width - 1
+			value |= 1 << (width - 1)
+		} else {
+			*curIndex += width
+		}
 
 		if *curIndex < 8 {
 			return value, nil
@@ -156,20 +163,94 @@ func popBitsFromSlice(slice *[]byte, width uint8, curByte *uint8, curIndex *uint
 		}
 
 		return value, nil
-
-		// firstMask := uint8(mask) >> 8
-		// firstPart := firstMask & data[dataByteIndex]
-		// fmt.Printf("firstPart: %d\n", firstPart)
-
-		// secondPart := uint8(0)
-		// if fieldWidth > 8 {
-		// 	secondMask := uint8(mask)
-		// 	secondPart = secondMask & data[]
-		// }
-
 	}
 
-	return 0, fmt.Errorf("not yet implemented")
+	// if addFirstBit {
+	// 	width--
+	// }
+
+	mask := uint64((1 << width) - 1)
+	mask <<= 40 - width - *curIndex
+	// Effective mask should now be entirely in its bottom five bytes.
+
+	// fmt.Printf("mask: 0x%x\n", mask)
+
+	// originalOffset := (8 - *curIndex) % 8
+	// originalOffset := *curIndex
+
+	var value uint32
+	readByteIndex := uint8(4)
+	dataBitIndex := uint8(24)
+
+	var finalIndex uint8
+	var remainingWidth uint8
+	if addFirstBit {
+		dataBitIndex--
+		finalIndex = (*curIndex + width - 1) % 8
+		remainingWidth = width - 1
+	} else {
+		finalIndex = (*curIndex + width) % 8
+		remainingWidth = width
+	}
+
+	for ; remainingWidth > 0; readByteIndex-- {
+		// for remainingWidth := width; remainingWidth > 0; readByteIndex-- {
+		curMask := uint8(mask >> (readByteIndex * 8))
+		curValue := uint8((*curByte & curMask) << *curIndex)
+
+		fmt.Printf("remainingWidth: %d, curMask: 0x%x, curByte: 0x%x, curIndex: %d, curValue: 0x%x\n", remainingWidth, curMask, *curByte, *curIndex, curValue)
+
+		// value |= uint32(curValue) << ((dataByteIndex * 8) - originalOffset)
+		// value |= uint32(curValue) << (dataByteIndex * 8)
+		// value |= uint32(curValue) << (dataBitIndex + originalOffset)
+		value |= uint32(curValue) << dataBitIndex
+
+		fmt.Printf("value now: 0x%08x\n", value)
+
+		advancedWidth := 8 - *curIndex
+		if remainingWidth < advancedWidth {
+			advancedWidth = remainingWidth
+		}
+		fmt.Printf("advancedWidth: %d, curIndex: %d\n", advancedWidth, *curIndex)
+		consumeByte := *curIndex+advancedWidth == 8
+
+		*curIndex = (*curIndex + advancedWidth) % 8
+
+		// fmt.Printf("advancedWidth: %d, curIndex: %d\n", advancedWidth, *curIndex)
+
+		if remainingWidth > advancedWidth {
+			remainingWidth -= advancedWidth
+		} else {
+			remainingWidth = 0
+		}
+
+		// if advancedWidth == 8 {
+		// 	dataByteIndex--
+		// }
+		dataBitIndex -= advancedWidth
+
+		if remainingWidth != 0 {
+			if len(*slice) == 0 {
+				return 0, fmt.Errorf("ran out of data before end of value, expected additional %d bits of data", remainingWidth)
+			}
+		}
+
+		if len(*slice) > 0 && consumeByte {
+			*curByte, *slice = (*slice)[0], (*slice)[1:len(*slice)]
+		}
+	}
+
+	// fmt.Printf("value before final shift: 0x%x, after shift: 0x%x\n", value, value>>(32-width))
+	value >>= 32 - width
+
+	if addFirstBit {
+		value |= 1 << (width - 1)
+	}
+
+	// fmt.Printf("curIndex: %d, width: %d\n", *curIndex, width)
+	*curIndex = finalIndex
+
+	return value, nil
 }
 
 func addBitsToSlice(slice *[]byte, value uint32, width uint8, curByte *uint8, curIndex *uint8, skipFirstBit bool) {

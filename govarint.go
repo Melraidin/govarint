@@ -1,7 +1,3 @@
-// TODO Can we skip storing the first bit of each value by assuming
-// it's always a 1? Otherwise we'd have stored a 0 for the value's
-// length.
-
 package govarint
 
 import (
@@ -132,6 +128,7 @@ func Decode(fields []uint8, data []byte) ([]uint32, error) {
 		if err != nil {
 			return []uint32{}, err
 		}
+
 		values = append(values, curValue)
 	}
 
@@ -139,12 +136,21 @@ func Decode(fields []uint8, data []byte) ([]uint32, error) {
 }
 
 func popBitsFromSlice(slice *[]byte, width uint8, curByte *uint8, curIndex *uint8, addFirstBit bool) (uint32, error) {
-	// We only need to read from the current byte.
-	if width+*curIndex <= 8 {
-		mask := uint8((1 << width) - 1)
-		mask <<= 8 - width - *curIndex
+	if width == 0 {
+		return 0, nil
+	}
 
-		value := uint32((*curByte & mask) >> (8 - width - *curIndex))
+	skipCount := uint8(0)
+	if addFirstBit {
+		skipCount = 1
+	}
+
+	// We only need to read from the current byte.
+	if width+*curIndex-skipCount <= 8 {
+		mask := uint8((1 << (width - skipCount)) - 1)
+		mask <<= 8 - (width - skipCount) - *curIndex
+
+		value := uint32((*curByte & mask) >> (8 - (width - skipCount) - *curIndex))
 
 		if addFirstBit {
 			*curIndex += width - 1
@@ -165,18 +171,9 @@ func popBitsFromSlice(slice *[]byte, width uint8, curByte *uint8, curIndex *uint
 		return value, nil
 	}
 
-	// if addFirstBit {
-	// 	width--
-	// }
-
 	mask := uint64((1 << width) - 1)
 	mask <<= 40 - width - *curIndex
 	// Effective mask should now be entirely in its bottom five bytes.
-
-	// fmt.Printf("mask: 0x%x\n", mask)
-
-	// originalOffset := (8 - *curIndex) % 8
-	// originalOffset := *curIndex
 
 	var value uint32
 	readByteIndex := uint8(4)
@@ -194,29 +191,19 @@ func popBitsFromSlice(slice *[]byte, width uint8, curByte *uint8, curIndex *uint
 	}
 
 	for ; remainingWidth > 0; readByteIndex-- {
-		// for remainingWidth := width; remainingWidth > 0; readByteIndex-- {
 		curMask := uint8(mask >> (readByteIndex * 8))
 		curValue := uint8((*curByte & curMask) << *curIndex)
 
-		fmt.Printf("remainingWidth: %d, curMask: 0x%x, curByte: 0x%x, curIndex: %d, curValue: 0x%x\n", remainingWidth, curMask, *curByte, *curIndex, curValue)
-
-		// value |= uint32(curValue) << ((dataByteIndex * 8) - originalOffset)
-		// value |= uint32(curValue) << (dataByteIndex * 8)
-		// value |= uint32(curValue) << (dataBitIndex + originalOffset)
 		value |= uint32(curValue) << dataBitIndex
-
-		fmt.Printf("value now: 0x%08x\n", value)
 
 		advancedWidth := 8 - *curIndex
 		if remainingWidth < advancedWidth {
 			advancedWidth = remainingWidth
 		}
-		fmt.Printf("advancedWidth: %d, curIndex: %d\n", advancedWidth, *curIndex)
+
 		consumeByte := *curIndex+advancedWidth == 8
 
 		*curIndex = (*curIndex + advancedWidth) % 8
-
-		// fmt.Printf("advancedWidth: %d, curIndex: %d\n", advancedWidth, *curIndex)
 
 		if remainingWidth > advancedWidth {
 			remainingWidth -= advancedWidth
@@ -224,9 +211,6 @@ func popBitsFromSlice(slice *[]byte, width uint8, curByte *uint8, curIndex *uint
 			remainingWidth = 0
 		}
 
-		// if advancedWidth == 8 {
-		// 	dataByteIndex--
-		// }
 		dataBitIndex -= advancedWidth
 
 		if remainingWidth != 0 {
@@ -240,14 +224,12 @@ func popBitsFromSlice(slice *[]byte, width uint8, curByte *uint8, curIndex *uint
 		}
 	}
 
-	// fmt.Printf("value before final shift: 0x%x, after shift: 0x%x\n", value, value>>(32-width))
 	value >>= 32 - width
 
 	if addFirstBit {
 		value |= 1 << (width - 1)
 	}
 
-	// fmt.Printf("curIndex: %d, width: %d\n", *curIndex, width)
 	*curIndex = finalIndex
 
 	return value, nil
@@ -292,7 +274,7 @@ func addBitsToSlice(slice *[]byte, value uint32, width uint8, curByte *uint8, cu
 			return
 		}
 
-		remainingBits -= 8 - *curIndex
+		remainingBits -= completedWidth
 	}
 
 	for i := start; remainingBits > 0; i -= 8 {
